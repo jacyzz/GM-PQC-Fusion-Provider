@@ -1,0 +1,23 @@
+{
+  "name": "GM+PQC Hybrid Crypto Dev",
+  "dockerComposeFile": [
+    "../docker-compose.yml"
+  ],
+  "service": "pqc-dev",
+  "remoteUser": "dev",
+  "workspaceFolder": "/workspaces/project",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "postCreateCommand": "bash scripts/verify_env.sh"
+}
+
+
+
