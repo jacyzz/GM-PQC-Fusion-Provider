@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* && update-ca-certificates
 
 ARG OPENSSL_VERSION=3.2.1
-ARG LIBOQS_REF=0.10.0
+ARG LIBOQS_REF=main
 
 # Build and install OpenSSL 3 (with SM2/SM3/SM4 enabled)
 RUN set -eux; \
@@ -33,7 +33,7 @@ RUN set -eux; \
   openssl version -a; \
   rm -rf /tmp/openssl
 
-# Build and install liboqs 0.10.0 (shared to lib64)
+# Build and install liboqs(main) (shared to lib64)
 RUN set -eux; \
   git clone --depth=1 --branch ${LIBOQS_REF} https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs; \
   cmake -S /tmp/liboqs -B /tmp/liboqs/build -GNinja \
@@ -65,7 +65,19 @@ RUN set -eux; \
   rm -rf /tmp/gmssl
 
 ENV PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig \
-    LD_LIBRARY_PATH=/usr/local/lib64:$LD_LIBRARY_PATH
+    LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib
+
+# Build and install oqs-provider (exposes PQC to OpenSSL as a provider)
+RUN set -eux; \
+  git clone --depth=1 https://github.com/open-quantum-safe/oqs-provider.git /tmp/oqs-provider; \
+  cmake -S /tmp/oqs-provider -B /tmp/oqs-provider/build -GNinja \
+    -DOPENSSL_ROOT_DIR=/usr/local \
+    -DCMAKE_BUILD_TYPE=Release; \
+  cmake --build /tmp/oqs-provider/build --target install; \
+  ldconfig; \
+  rm -rf /tmp/oqs-provider
+
+ENV OPENSSL_MODULES=/usr/local/lib64/ossl-modules
 
 # Create non-root user for devcontainers
 ARG USERNAME=dev
@@ -86,6 +98,10 @@ RUN set -eux; \
   openssl version -a; \
   pkg-config --modversion liboqs || true; \
   test -f /opt/gmssl/lib/libcrypto.a && test -f /opt/gmssl/lib/libssl.a; \
+  echo "[self-check] openssl providers:"; \
+  openssl list -providers || true; \
+  echo "[self-check] oqsprovider KEMs:"; \
+  openssl list -kem-algorithms -provider oqsprovider -provider default || true; \
   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:SM2 -out /tmp/sm2.key >/dev/null 2>&1 || true
 
 CMD ["sleep", "infinity"]

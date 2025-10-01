@@ -1,7 +1,7 @@
 {
   "name": "GM+PQC Hybrid Crypto Dev",
   "dockerComposeFile": [
-    "../docker-compose.yml"
+    "../infra/compose/docker-compose.yml"
   ],
   "service": "pqc-dev",
   "remoteUser": "dev",
@@ -16,7 +16,7 @@
       ]
     }
   },
-  "postCreateCommand": "bash scripts/verify_env.sh"
+  "postCreateCommand": "bash infra/scripts/verify_env.sh"
 }
 
 

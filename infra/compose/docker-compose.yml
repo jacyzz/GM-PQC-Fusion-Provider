@@ -1,14 +1,12 @@
-version: "3.8"
 services:
   pqc-dev:
     build:
-      context: .
+      context: ../..
       dockerfile: .devcontainer/Dockerfile
     container_name: pqc-dev
     working_dir: /workspaces/project
     volumes:
-      - ./:/workspaces/project
+      - ../../:/workspaces/project
     command: ["sleep", "infinity"]
-
 
 
