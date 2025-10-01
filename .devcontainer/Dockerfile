@@ -52,9 +52,16 @@ RUN set -eux; \
 RUN set -eux; \
   git clone --depth=1 https://github.com/guanzhi/GmSSL.git /tmp/gmssl; \
   cd /tmp/gmssl; \
-  ./config no-shared --prefix=/opt/gmssl; \
-  make -j"$(nproc)"; \
-  make install_sw; \
+  if [ -f "./config" ]; then \
+    ./config no-shared --prefix=/opt/gmssl; \
+    make -j"$(nproc)"; \
+    make install_sw; \
+  else \
+    cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX=/opt/gmssl; \
+    cmake --build build --target install; \
+  fi; \
+  ls -l /opt/gmssl/lib; \
+  test -f /opt/gmssl/lib/libcrypto.a && test -f /opt/gmssl/lib/libssl.a; \
   rm -rf /tmp/gmssl
 
 ENV PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:$PKG_CONFIG_PATH \
