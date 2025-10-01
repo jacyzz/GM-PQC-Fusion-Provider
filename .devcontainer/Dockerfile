@@ -64,7 +64,7 @@ RUN set -eux; \
   test -f /opt/gmssl/lib/libcrypto.a && test -f /opt/gmssl/lib/libssl.a; \
   rm -rf /tmp/gmssl
 
-ENV PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:$PKG_CONFIG_PATH \
+ENV PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig \
     LD_LIBRARY_PATH=/usr/local/lib64:$LD_LIBRARY_PATH
 
 # Create non-root user for devcontainers
