@@ -3,8 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-// 【修正】: 引入 gmssl/sm2.h 因为 SM2_KEY 在此定义
-#include <gmssl/sm2.h>
+#include <openssl/evp.h>
 #include <oqs/oqs.h>
 
 /*
@@ -47,9 +46,9 @@ typedef enum {
  * @brief 【重大修正】: 使用 SM2_KEY 值类型代替 EC_KEY 指针
  */
 typedef struct {
-    SM2_KEY sm2_key;      // SM2 密钥对 (值类型，不再是指针)
+    EVP_PKEY *sm2_key;    // SM2 私钥（服务端）或公钥（客户端）
     OQS_KEM *kem_ctx;     // OQS KEM 上下文 (包含算法详情和函数指针)
-    uint8_t *kem_sk;      // OQS KEM 私钥的原始字节
+    uint8_t *kem_sk;      // OQS KEM 私钥的原始字节（服务端持有）
     size_t kem_sk_len;    // OQS KEM 私钥的长度
 } gmpqc_hybrid_secret_key_t;
 

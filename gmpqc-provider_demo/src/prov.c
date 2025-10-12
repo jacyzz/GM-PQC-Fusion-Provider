@@ -1,5 +1,8 @@
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
+#include <openssl/params.h>
+#include <openssl/opensslv.h>
+#include "internal/gmpqc_keymgmt.h"
 
 /*
  * 声明我们将要引用的外部函数分发表。
@@ -7,6 +10,7 @@
  * 'extern' 关键字告诉编译器，这个变量的实体在别的文件里，链接时再去找它。
  */
 extern const OSSL_DISPATCH gmpqc_hybrid_kem_functions[];
+extern const OSSL_ALGORITHM gmpqc_supported_keymgmt[];
 
 /*
  * 定义我们的 Provider 所支持的算法列表。
@@ -42,9 +46,46 @@ static const OSSL_ALGORITHM *gmpqc_query(void *provctx, int operation_id, int *n
         // 我们就返回上面定义的 KEM 算法列表。
         return gmpqc_supported_kems;
     }
+    if (operation_id == OSSL_OP_KEYMGMT) {
+        return gmpqc_supported_keymgmt;
+    }
 
     // 对于其他类型的操作 (如 Cipher, Signature 等)，我们返回 NULL，表示不支持。
     return NULL;
+}
+
+/*
+ * Provider 参数查询实现，供 openssl list -providers 等命令读取
+ */
+static const OSSL_PARAM *gmpqc_gettable_params(const OSSL_CORE_HANDLE *prov)
+{
+    static const OSSL_PARAM param_types[] = {
+        OSSL_PARAM_utf8_ptr(OSSL_PROV_PARAM_NAME, NULL, 0),
+        OSSL_PARAM_utf8_ptr(OSSL_PROV_PARAM_VERSION, NULL, 0),
+        OSSL_PARAM_utf8_ptr(OSSL_PROV_PARAM_BUILDINFO, NULL, 0),
+        OSSL_PARAM_END
+    };
+    return param_types;
+}
+
+static int gmpqc_get_params(OSSL_PARAM params[])
+{
+    OSSL_PARAM *p;
+
+    p = OSSL_PARAM_locate(params, OSSL_PROV_PARAM_NAME);
+    if (p != NULL && !OSSL_PARAM_set_utf8_ptr(p, "gmpqc_provider"))
+        return 0;
+
+    p = OSSL_PARAM_locate(params, OSSL_PROV_PARAM_VERSION);
+    /* Use our provider version string; fall back to OpenSSL version macro if desired */
+    if (p != NULL && !OSSL_PARAM_set_utf8_ptr(p, "0.1.0"))
+        return 0;
+
+    p = OSSL_PARAM_locate(params, OSSL_PROV_PARAM_BUILDINFO);
+    if (p != NULL && !OSSL_PARAM_set_utf8_ptr(p, OPENSSL_FULL_VERSION_STR))
+        return 0;
+
+    return 1;
 }
 
 /*
@@ -52,6 +93,8 @@ static const OSSL_ALGORITHM *gmpqc_query(void *provctx, int operation_id, int *n
  * 这定义了 Provider 自身的核心行为，比如如何响应查询。
  */
 static const OSSL_DISPATCH gmpqc_provider_functions[] = {
+    { OSSL_FUNC_PROVIDER_GETTABLE_PARAMS, (void (*)(void))gmpqc_gettable_params },
+    { OSSL_FUNC_PROVIDER_GET_PARAMS, (void (*)(void))gmpqc_get_params },
     { OSSL_FUNC_PROVIDER_QUERY_OPERATION, (void (*)(void))gmpqc_query },
     { 0, NULL }
 };

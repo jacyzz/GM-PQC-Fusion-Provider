@@ -3,8 +3,8 @@
 #include <string.h>
 #include <arpa/inet.h>
 #include <openssl/rand.h>
-// 【修正】: 只需要 sm2.h 就够了，它包含了所有需要的函数声明
-#include <gmssl/sm2.h>
+#include <openssl/evp.h>
+#include <openssl/x509.h>
 
 // 定义 SM2 封装的秘密长度
 #define SM2_SHARED_SECRET_LEN 32
@@ -21,7 +21,7 @@ gmpqc_crypto_ret_t gmpqc_hybrid_keygen(
     gmpqc_crypto_ret_t ret = GMPQC_CRYPTO_ERROR;
     gmpqc_hybrid_secret_key_t *sk = NULL;
     unsigned char *pk_sm2_der = NULL;
-    size_t pk_sm2_der_len = 0;
+    int pk_sm2_der_len = 0;
     uint8_t *pk_mlkem = NULL;
 
     sk = calloc(1, sizeof(gmpqc_hybrid_secret_key_t));
@@ -47,14 +47,16 @@ gmpqc_crypto_ret_t gmpqc_hybrid_keygen(
         goto cleanup;
     }
 
-    // 【修正】: 使用新的、正确的 GmSSL API 生成 SM2 密钥
-    if (sm2_key_generate(&sk->sm2_key) != 1) {
-        ret = GMPQC_CRYPTO_GMSSL_ERROR;
-        goto cleanup;
-    }
+    // 生成 SM2 密钥对（OpenSSL 3 EVP）
+    EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_from_name(NULL, "SM2", NULL);
+    if (!kctx) { ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    if (EVP_PKEY_keygen_init(kctx) <= 0) { EVP_PKEY_CTX_free(kctx); ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    if (EVP_PKEY_generate(kctx, &sk->sm2_key) <= 0) { EVP_PKEY_CTX_free(kctx); ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    EVP_PKEY_CTX_free(kctx);
 
-    // 【修正】: 使用新的、正确的 GmSSL API 序列化公钥
-    if (sm2_public_key_info_to_der(&sk->sm2_key, &pk_sm2_der, &pk_sm2_der_len) != 1) {
+    // 导出公钥为 SubjectPublicKeyInfo DER
+    pk_sm2_der_len = i2d_PUBKEY(sk->sm2_key, &pk_sm2_der);
+    if (pk_sm2_der_len <= 0) {
         ret = GMPQC_CRYPTO_GMSSL_ERROR;
         goto cleanup;
     }
@@ -66,16 +68,17 @@ gmpqc_crypto_ret_t gmpqc_hybrid_keygen(
         goto cleanup;
     }
 
-    *(uint16_t*)*hybrid_pk = htons(pk_sm2_der_len);
-    memcpy(*hybrid_pk + 2, pk_sm2_der, pk_sm2_der_len);
-    memcpy(*hybrid_pk + 2 + pk_sm2_der_len, pk_mlkem, sk->kem_ctx->length_public_key);
+    (*hybrid_pk)[0] = (unsigned char)((pk_sm2_der_len >> 8) & 0xFF);
+    (*hybrid_pk)[1] = (unsigned char)(pk_sm2_der_len & 0xFF);
+    memcpy(*hybrid_pk + 2, pk_sm2_der, (size_t)pk_sm2_der_len);
+    memcpy(*hybrid_pk + 2 + (size_t)pk_sm2_der_len, pk_mlkem, sk->kem_ctx->length_public_key);
 
     *secret_key_out = sk;
     sk = NULL;
     ret = GMPQC_CRYPTO_SUCCESS;
 
 cleanup:
-    free(pk_sm2_der); // GmSSL 的 to_der 函数会分配内存，需要释放
+    OPENSSL_free(pk_sm2_der);
     free(pk_mlkem);
     if (sk != NULL) {
         gmpqc_hybrid_secret_key_free(sk);
@@ -94,7 +97,7 @@ void gmpqc_hybrid_secret_key_free(gmpqc_hybrid_secret_key_t *sk) {
     if (sk == NULL) {
         return;
     }
-    // 【修正】: SM2_KEY 是值类型，不需要 free。
+    if (sk->sm2_key) EVP_PKEY_free(sk->sm2_key);
     OQS_KEM_free(sk->kem_ctx);
     if (sk->kem_sk) {
         OQS_MEM_secure_free(sk->kem_sk, sk->kem_sk_len);
@@ -118,7 +121,7 @@ gmpqc_crypto_ret_t gmpqc_hybrid_encaps(
     const unsigned char *p_sm2_pk = NULL, *p_mlkem_pk = NULL;
     size_t sm2_pk_len = 0;
     size_t mlkem_pk_len = 0;
-    SM2_KEY sm2_pk_obj = {0};
+    EVP_PKEY *sm2_pub = NULL;
 
     OQS_KEM *kem = NULL;
     uint8_t *s_sm2 = NULL, *c_sm2 = NULL, *s_mlkem = NULL, *c_mlkem = NULL;
@@ -127,7 +130,7 @@ gmpqc_crypto_ret_t gmpqc_hybrid_encaps(
     if (hybrid_pk_len < 2) {
         return GMPQC_CRYPTO_INVALID_INPUT_ERROR;
     }
-    sm2_pk_len = ntohs(*(uint16_t*)hybrid_pk);
+    sm2_pk_len = ((size_t)hybrid_pk[0] << 8) | (size_t)hybrid_pk[1];
     p_sm2_pk = hybrid_pk + 2;
     p_mlkem_pk = p_sm2_pk + sm2_pk_len;
     if (2 + sm2_pk_len > hybrid_pk_len) {
@@ -144,10 +147,11 @@ gmpqc_crypto_ret_t gmpqc_hybrid_encaps(
         goto cleanup;
     }
 
-    // 【修正】: 使用新的、正确的 GmSSL API 解析公钥
-    if (sm2_public_key_info_from_der(&sm2_pk_obj, &p_sm2_pk, &sm2_pk_len) != 1) {
-        ret = GMPQC_CRYPTO_GMSSL_ERROR;
-        goto cleanup;
+    // 从 DER 解析 SM2 公钥（OpenSSL EVP）
+    {
+        const unsigned char *tmp = p_sm2_pk;
+        sm2_pub = d2i_PUBKEY(NULL, &tmp, (long)sm2_pk_len);
+        if (!sm2_pub) { ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
     }
 
     s_sm2 = malloc(SM2_SHARED_SECRET_LEN);
@@ -160,18 +164,22 @@ gmpqc_crypto_ret_t gmpqc_hybrid_encaps(
         goto cleanup;
     }
 
-    c_sm2 = malloc(SM2_MAX_CIPHERTEXT_SIZE);
-    if (c_sm2 == NULL) {
-        ret = GMPQC_CRYPTO_MALLOC_ERROR;
-        goto cleanup;
-    }
-    c_sm2_len = SM2_MAX_CIPHERTEXT_SIZE;
-
-    // 【修正】: 调用新的、正确的 sm2_encrypt 函数
-    if (sm2_encrypt(&sm2_pk_obj, s_sm2, SM2_SHARED_SECRET_LEN, c_sm2, &c_sm2_len) != 1) {
-        ret = GMPQC_CRYPTO_GMSSL_ERROR;
-        goto cleanup;
-    }
+    c_sm2 = NULL; // will be allocated after querying size
+    // SM2 公钥加密（EVP）
+    EVP_PKEY_CTX *ectx = EVP_PKEY_CTX_new(sm2_pub, NULL);
+    if (!ectx) { ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    if (EVP_PKEY_encrypt_init(ectx) <= 0) { EVP_PKEY_CTX_free(ectx); ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    // 可选：设置 SM2 ID（双方需一致）。如需设置，可启用以下代码：
+    // const char *sm2_id = "1234567812345678"; OSSL_PARAM params[] = {
+    //   OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_DIST_ID, (void*)sm2_id, strlen(sm2_id)), OSSL_PARAM_END };
+    // EVP_PKEY_CTX_set_params(ectx, params);
+    size_t outlen = 0;
+    if (EVP_PKEY_encrypt(ectx, NULL, &outlen, s_sm2, SM2_SHARED_SECRET_LEN) <= 0) { EVP_PKEY_CTX_free(ectx); ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    c_sm2 = malloc(outlen);
+    if (!c_sm2) { EVP_PKEY_CTX_free(ectx); ret = GMPQC_CRYPTO_MALLOC_ERROR; goto cleanup; }
+    c_sm2_len = outlen;
+    if (EVP_PKEY_encrypt(ectx, c_sm2, &c_sm2_len, s_sm2, SM2_SHARED_SECRET_LEN) <= 0) { EVP_PKEY_CTX_free(ectx); ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    EVP_PKEY_CTX_free(ectx);
 
     s_mlkem = malloc(kem->length_shared_secret);
     c_mlkem = malloc(kem->length_ciphertext);
@@ -190,7 +198,8 @@ gmpqc_crypto_ret_t gmpqc_hybrid_encaps(
         ret = GMPQC_CRYPTO_MALLOC_ERROR;
         goto cleanup;
     }
-    *(uint16_t*)*hybrid_ct = htons(c_sm2_len);
+    (*hybrid_ct)[0] = (unsigned char)((c_sm2_len >> 8) & 0xFF);
+    (*hybrid_ct)[1] = (unsigned char)(c_sm2_len & 0xFF);
     memcpy(*hybrid_ct + 2, c_sm2, c_sm2_len);
     memcpy(*hybrid_ct + 2 + c_sm2_len, c_mlkem, kem->length_ciphertext);
     
@@ -206,7 +215,7 @@ gmpqc_crypto_ret_t gmpqc_hybrid_encaps(
     ret = GMPQC_CRYPTO_SUCCESS;
 
 cleanup:
-    // 【修正】: SM2_KEY 是栈变量，不需要清理
+    if (sm2_pub) EVP_PKEY_free(sm2_pub);
     OQS_KEM_free(kem);
     free(s_sm2);
     free(c_sm2);
@@ -245,7 +254,7 @@ gmpqc_crypto_ret_t gmpqc_hybrid_decaps(
     if (hybrid_ct_len < 2) {
         return GMPQC_CRYPTO_INVALID_INPUT_ERROR;
     }
-    sm2_ct_len = ntohs(*(uint16_t*)hybrid_ct);
+    sm2_ct_len = ((size_t)hybrid_ct[0] << 8) | (size_t)hybrid_ct[1];
     p_sm2_ct = hybrid_ct + 2;
     p_mlkem_ct = p_sm2_ct + sm2_ct_len;
     if (2 + sm2_ct_len > hybrid_ct_len) {
@@ -256,21 +265,20 @@ gmpqc_crypto_ret_t gmpqc_hybrid_decaps(
         return GMPQC_CRYPTO_INVALID_INPUT_ERROR;
     }
 
-    s_sm2 = malloc(SM2_MAX_PLAINTEXT_SIZE); // 分配足够大的空间
-    if (s_sm2 == NULL) {
-        ret = GMPQC_CRYPTO_MALLOC_ERROR;
-        goto cleanup;
-    }
-
-    // 【修正】: 调用新的、正确的 sm2_decrypt 函数
-    if (sm2_decrypt(&secret_key->sm2_key, p_sm2_ct, sm2_ct_len, s_sm2, &s_sm2_len_out) != 1) {
-        ret = GMPQC_CRYPTO_GMSSL_ERROR;
-        goto cleanup;
-    }
-    if (s_sm2_len_out != SM2_SHARED_SECRET_LEN) {
-        ret = GMPQC_CRYPTO_ERROR;
-        goto cleanup;
-    }
+    s_sm2 = NULL; // allocated after size query
+    // SM2 私钥解密（EVP）
+    if (!secret_key->sm2_key) { ret = GMPQC_CRYPTO_INVALID_INPUT_ERROR; goto cleanup; }
+    EVP_PKEY_CTX *dctx = EVP_PKEY_CTX_new(secret_key->sm2_key, NULL);
+    if (!dctx) { ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    if (EVP_PKEY_decrypt_init(dctx) <= 0) { EVP_PKEY_CTX_free(dctx); ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    size_t ptlen = 0;
+    if (EVP_PKEY_decrypt(dctx, NULL, &ptlen, p_sm2_ct, sm2_ct_len) <= 0) { EVP_PKEY_CTX_free(dctx); ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    s_sm2 = malloc(ptlen);
+    if (!s_sm2) { EVP_PKEY_CTX_free(dctx); ret = GMPQC_CRYPTO_MALLOC_ERROR; goto cleanup; }
+    s_sm2_len_out = ptlen;
+    if (EVP_PKEY_decrypt(dctx, s_sm2, &s_sm2_len_out, p_sm2_ct, sm2_ct_len) <= 0) { EVP_PKEY_CTX_free(dctx); ret = GMPQC_CRYPTO_GMSSL_ERROR; goto cleanup; }
+    EVP_PKEY_CTX_free(dctx);
+    if (s_sm2_len_out != SM2_SHARED_SECRET_LEN) { ret = GMPQC_CRYPTO_ERROR; goto cleanup; }
 
     s_mlkem = malloc(secret_key->kem_ctx->length_shared_secret);
     if (s_mlkem == NULL) {

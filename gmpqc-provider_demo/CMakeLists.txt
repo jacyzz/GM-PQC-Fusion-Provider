@@ -36,17 +36,12 @@ pkg_search_module(OQS REQUIRED liboqs)
 # 因为 GmSSL 是非标准安装，所以需要手动指定路径来寻找。
 # find_path 用于寻找包含特定文件（openssl/sm2.h）的目录，作为头文件目录。
 # HINTS 提供了寻找的优先路径。
-# find_path(GMSSL_INCLUDE_DIR openssl/sm2.h HINTS /opt/gmssl/include)
 find_path(GMSSL_INCLUDE_DIR gmssl/sm2.h HINTS /opt/gmssl/include)
 # find_library 用于寻找指定的库文件（llibgmssl.a）。
-# find_library(GMSSL_CRYPTO_LIBRARY NAMES libcrypto.a HINTS /opt/gmssl/lib)
-# find_library(GMSSL_CRYPTO_LIBRARY NAMES libgmssl.a HINTS /opt/gmssl/lib)
 find_library(GMSSL_CRYPTO_LIBRARY NAMES libgmssl.so HINTS /opt/gmssl/lib)
 
 # 这是一个健壮性检查，确保 GmSSL 的头文件和库文件都已成功找到。
-if(NOT GMSSL_INCLUDE_DIR OR NOT GMSSL_CRYPTO_LIBRARY)
-    message(FATAL_ERROR "GmSSL library or includes not found in /opt/gmssl.")
-endif()
+# 方案A：不在 provider 中引入 GmSSL，统一使用 OpenSSL 3 原生 SM2/SM3/SM4。
 
 
 # --- 设置头文件包含路径 ---
@@ -58,8 +53,6 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/internal
     # liboqs 的头文件目录（由 pkg_search_module 设置）。
     ${OQS_INCLUDE_DIRS}
-    # GmSSL 的头文件目录（由 find_path 设置）。
-    ${GMSSL_INCLUDE_DIR}
     # 注意：OpenSSL 的头文件路径无需在此添加，因为它会通过链接 OpenSSL::Crypto 自动包含。
 )
 
@@ -72,6 +65,7 @@ include_directories(
 add_library(gmpqc_provider MODULE
     src/prov.c
     src/hybrid_kem.c
+    src/keymgmt.c
     src/internal/hybrid_crypto.c
 )
 
@@ -90,8 +84,6 @@ target_link_libraries(gmpqc_provider
     OpenSSL::Crypto
     # 链接 liboqs 库。
     ${OQS_LIBRARIES}
-    # 链接 GmSSL 的静态加密库。
-    ${GMSSL_CRYPTO_LIBRARY}
 )
 
 # 引入 GNUInstallDirs 模块，它提供了一系列标准的安装路径变量，如 CMAKE_INSTALL_LIBDIR。

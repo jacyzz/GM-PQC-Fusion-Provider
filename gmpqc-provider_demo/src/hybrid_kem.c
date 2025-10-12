@@ -4,9 +4,11 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 #include "internal/hybrid_crypto.h" // 包含我们自己的底层加密模块
+#include "internal/gmpqc_keymgmt.h"
+#include <string.h>
 
 // 定义我们将在 Provider 中注册的 KEM 算法的名称
-#define HYBRID_KEM_NAME "SM2-ML-KEM-768"
+#define HYBRID_KEM_NAME GMPQC_HYBRID_KEM_NAME
 
 // --- 步骤 1: 定义 Provider 的上下文结构体 ---
 // 这个结构体用于在 KEM 操作的不同阶段之间传递数据。
@@ -69,13 +71,11 @@ static void *gmpqc_kem_dupctx(void *vctx) {
 // (服务器端) 初始化解封装操作，通常在这里加载私钥
 static int gmpqc_kem_decapsulate_init(void *vctx, void *vkey, const OSSL_PARAM params[]) {
     GMPQC_KEM_CTX *ctx = (GMPQC_KEM_CTX *)vctx;
-    
-    // 在实际的 TLS 流程中，vkey 会是包含我们私钥的 EVP_PKEY 对象
-    // 我们需要从 EVP_PKEY 中提取出 gmpqc_hybrid_secret_key_t
-    // 目前，我们先假设私钥已经生成并存在于 ctx->hybrid_sk 中
-    
-    // TODO: 实现从 vkey 加载私钥到 ctx->hybrid_sk 的逻辑
-    
+    (void)params;
+    /* vkey is provider-side key (KEYMGMT). We clone materials for decap. */
+    if (!vkey) return 0;
+    if (ctx->hybrid_sk) { gmpqc_hybrid_secret_key_free(ctx->hybrid_sk); ctx->hybrid_sk = NULL; }
+    if (!gmpqc_keymgmt_clone_for_decap((GMPQC_KEY*)vkey, &ctx->hybrid_sk)) return 0;
     return 1; // 成功
 }
 
@@ -105,12 +105,10 @@ static int gmpqc_kem_decapsulate(void *vctx, unsigned char *out, size_t *outlen,
 // (客户端) 初始化封装操作，通常在这里加载公钥
 static int gmpqc_kem_encapsulate_init(void *vctx, void *vkey, const OSSL_PARAM params[]) {
     GMPQC_KEM_CTX *ctx = (GMPQC_KEM_CTX *)vctx;
-
-    // 在 TLS 流程中，vkey 是从服务器证书中提取的公钥 EVP_PKEY 对象
-    // 我们需要将公钥序列化后存入 ctx->peer_hybrid_pk
-    
-    // TODO: 实现从 vkey 加载公钥到 ctx->peer_hybrid_pk 的逻辑
-
+    (void)params;
+    if (ctx->peer_hybrid_pk) { OPENSSL_free(ctx->peer_hybrid_pk); ctx->peer_hybrid_pk = NULL; ctx->peer_hybrid_pk_len = 0; }
+    if (!vkey) return 0;
+    if (!gmpqc_keymgmt_get_serialized_pub((GMPQC_KEY*)vkey, &ctx->peer_hybrid_pk, &ctx->peer_hybrid_pk_len)) return 0;
     return 1; // 成功
 }
 
@@ -124,7 +122,8 @@ static int gmpqc_kem_encapsulate(void *vctx, unsigned char *out, size_t *outlen,
     size_t shared_secret_len = 0;
 
     // 调用我们的底层封装函数
-    if (gmpqc_hybrid_encaps(HYBRID_KEM_NAME, ctx->peer_hybrid_pk, ctx->peer_hybrid_pk_len, &hybrid_ct, &hybrid_ct_len, &shared_secret, &shared_secret_len) != GMPQC_CRYPTO_SUCCESS) {
+    /* Use the underlying OQS KEM for liboqs (e.g., "ML-KEM-768"), not the provider algorithm name */
+    if (gmpqc_hybrid_encaps(GMPQC_UNDERLYING_OQS_KEM, ctx->peer_hybrid_pk, ctx->peer_hybrid_pk_len, &hybrid_ct, &hybrid_ct_len, &shared_secret, &shared_secret_len) != GMPQC_CRYPTO_SUCCESS) {
         return 0; // 失败
     }
 
