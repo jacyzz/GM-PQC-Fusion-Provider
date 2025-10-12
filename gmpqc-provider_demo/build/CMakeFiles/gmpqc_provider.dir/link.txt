@@ -1,0 +1,1 @@
+/usr/bin/cc -fPIC -shared  -o gmpqc_provider.so CMakeFiles/gmpqc_provider.dir/src/prov.c.o CMakeFiles/gmpqc_provider.dir/src/hybrid_kem.c.o CMakeFiles/gmpqc_provider.dir/src/internal/hybrid_crypto.c.o  -Wl,-rpath,/usr/local/lib64:/opt/gmssl/lib: /usr/local/lib64/libcrypto.so -loqs /opt/gmssl/lib/libgmssl.so 
