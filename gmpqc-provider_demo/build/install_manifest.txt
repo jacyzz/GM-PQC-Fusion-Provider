@@ -1,1 +1,0 @@
-/usr/local/lib64/ossl-modules/gmpqc_provider.so
