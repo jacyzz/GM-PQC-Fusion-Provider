@@ -1,0 +1,7 @@
+# ninja log v5
+0	90	1760269695487448518	CMakeFiles/gmpqc_provider.dir/src/prov.c.o	3e7b8e15660e4c7d
+0	107	1760269695507425247	CMakeFiles/gmpqc_provider.dir/src/hybrid_kem.c.o	54ec9b7f9fb80460
+1	149	1760269695547378704	CMakeFiles/gmpqc_provider.dir/src/internal/hybrid_crypto.c.o	3afbb6a3731ac295
+1	157	1760269695555369396	CMakeFiles/gmpqc_provider.dir/src/keymgmt.c.o	60e1b246f04fcaf4
+157	208	1760269695607309742	gmpqc_provider.so	d3bbb5d38adadcfe
+1	15	0	CMakeFiles/install.util	2a1739b6a92af5d4
