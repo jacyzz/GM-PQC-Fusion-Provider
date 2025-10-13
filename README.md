@@ -162,4 +162,90 @@ openssl list -kem-algorithms -provider gmpqc_provider -provider default -verbose
 openssl list -help
 ```
 
+## Provider 设计与“混合密钥”实现逻辑（SM2 + ML-KEM）
+
+本项目的自研 Provider（模块名：`gmpqc_provider`，算法名：`SM2-ML-KEM-768`）以 OpenSSL 3 Provider 模式实现“国密 SM2 + PQC ML-KEM-768”的混合 KEM，核心由两部分组成：
+
+- KEYMGMT（密钥管理，算法名同为 `SM2-ML-KEM-768`）
+- KEM（封装/解封装接口，算法名 `SM2-ML-KEM-768`）
+
+实现原则：
+- 国密部分全部使用 OpenSSL 3 的原生 EVP SM2 能力（不在 provider 内引入 GmSSL）。
+- PQC 部分使用 liboqs（本实现固定为 ML-KEM-768，对应 OQS 名称 `ML-KEM-768`）。
+- 通过 KEYMGMT 将“混合密钥”的公钥序列化为“可被应用层直接携带/传输”的二进制，KEM 则消费该公钥完成混合封装。
+
+### 数据结构与格式
+
+- 混合公钥（KEYMGMT 导出的 `OSSL_PKEY_PARAM_PUB_KEY` 值）：
+	- 格式：`[2 字节大端 SM2 SPKI DER 长度] | [SM2 SPKI DER] | [ML-KEM 公钥]`
+	- 说明：
+		- SM2 SPKI DER 使用 OpenSSL `i2d_PUBKEY()` 导出（标准 X.509 SubjectPublicKeyInfo）。
+		- ML-KEM 公钥来自 liboqs 的 `OQS_KEM_keypair()` 生成。
+
+- 混合密文（KEM 封装输出 out）：
+	- 格式：`[2 字节大端 SM2 密文长度] | [SM2 密文] | [ML-KEM 密文]`
+	- 说明：
+		- SM2 密文由 EVP `EVP_PKEY_encrypt()` 对 32 字节随机片段加密得到（即 SM2 KEM 的对称种子部分）。
+		- ML-KEM 密文由 liboqs `OQS_KEM_encaps()` 生成。
+
+- 共享秘密（KEM 封装/解封装的 secret）：
+	- 格式：`[SM2 共享片段(32B)] | [ML-KEM 共享秘密]`
+	- 说明：
+		- SM2 共享片段是封装端随机生成的 32 字节，经 SM2 公钥加密/私钥解密对齐。
+		- ML-KEM 共享秘密由 liboqs 提供（ML-KEM-768 通常为 32 字节）。
+		- 合并后一般为 64 字节（32 + 32）。
+
+### KEYMGMT（生成/导入/导出）
+
+- 生成（`GEN`）：
+	1) 使用 OpenSSL EVP 生成 SM2 密钥对。
+	2) 使用 liboqs 生成 ML-KEM-768 密钥对。
+	3) 将二者保存在 provider 私有结构（`GMPQC_KEY`）。
+
+- 导入公钥（`IMPORT`）：
+	- 支持从上面的“混合公钥格式”导入，仅用于公共参数（服务端发给客户端，或客户端收到后封装）。
+
+- 导出公钥（`EXPORT` / `GET_PARAMS`）：
+	- 通过 `OSSL_PKEY_PARAM_PUB_KEY` 返回“混合公钥格式”二进制，便于应用层直接传输。
+
+注意：目前未实现私钥的序列化（serializer/encoder）。这意味着 `openssl genpkey -out key.pem` 这类直接写文件的命令不适用；但不影响示例程序的生成/封装/解封装使用。
+
+### KEM（封装/解封装）
+
+- 封装（客户端侧）：
+	1) `ENCAPSULATE_INIT` 从 `vkey`（KEYMGMT）中提取序列化混合公钥。
+	2) 解析得到 SM2 SPKI DER 与 ML-KEM 公钥。
+	3) 生成 32 字节随机片段，用 SM2 公钥 `EVP_PKEY_encrypt()` 加密，得到 SM2 密文。
+	4) 调用 `OQS_KEM_encaps(ML-KEM-768)` 得到 ML-KEM 密文与共享秘密。
+	5) 输出混合密文与共享秘密（共享秘密为 32B SM2 片段 + ML-KEM 共享秘密）。
+
+- 解封装（服务端侧）：
+	1) `DECAPSULATE_INIT` 基于 `vkey` 克隆出内部私钥材料（SM2 私钥 + ML-KEM 私钥）。
+	2) 解析混合密文，分离 SM2 密文与 ML-KEM 密文。
+	3) 用 SM2 私钥 `EVP_PKEY_decrypt()` 还原 32 字节片段。
+	4) 调用 `OQS_KEM_decaps()` 还原 ML-KEM 共享秘密。
+	5) 拼接得到共享秘密（同封装端）。
+
+### Provider 能力与属性
+
+- Provider 参数：已实现 `NAME`、`VERSION`、`BUILDINFO` 以便 `openssl list -providers` 无警告列出。
+- 暴露的操作与算法：
+	- `OSSL_OP_KEYMGMT`：`SM2-ML-KEM-768`（属性：`provider=gmpqc`）
+	- `OSSL_OP_KEM`：`SM2-ML-KEM-768`（属性：`provider=gmpqc`）
+- 算法选择：应用层可通过 `-provider gmpqc_provider -provider default` 加载，并在需要时用 `-propquery 'provider=gmpqc'` 做属性过滤。
+
+### 与示例程序的对接
+
+- 服务端：`--kem SM2-ML-KEM-768` 生成混合密钥并导出“混合公钥格式”，打包进 ServerHello 发给客户端。
+- 客户端：收到“混合公钥格式”后，使用 `SM2-ML-KEM-768` 完成封装，返回“混合密文”。
+- 双方用 HKDF-SHA3-256 对共享秘密派生会话密钥，再用 AEAD（默认 `aes-128-gcm`）进行数据加解密。
+
+### 限制与可扩展项
+
+- 暂未提供私钥 serializer/encoder；如需 `genpkey -out` 导出，请扩展相应组件。
+- 可选增强：
+	- 支持配置 SM2 Dist-ID（双方需要一致）。
+	- 把 OQS KEM 名称参数化（例如 ML-KEM-512/1024）。
+	- 增加错误信息的可观测性与统计。
+
 
