@@ -1,0 +1,11 @@
+SOURCE[../crypto/oqs/oqs_meth.c]=oqs_meth.c
+SOURCE[../crypto/oqs/oqs_utils.c]=oqs_utils.c
+SOURCE[../crypto/oqs/kex_p256_kyber768.c]=oqs_kex.c
+SOURCE[../crypto/oqs/kex_p384_kyber768.c]=oqs_kex.c
+SOURCE[../crypto/oqs/kex_p521_mlkem1024.c]=oqs_kex.c
+SOURCE[../crypto/oqs/kex_x25519_mlkem768.c]=oqs_kex.c
+SOURCE[../crypto/oqs/kex_x448_mlkem1024.c]=oqs_kex.c
+SOURCE[../crypto/oqs/kex_sm2_mlkem768.c]=oqs_kex.c
+
+ রান
+SOURCE[../crypto/oqs/sig_picnic.c]=oqs_sig.c
